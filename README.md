@@ -4,6 +4,10 @@ A Rust adapter for dispatching and reconciling GitHub Actions workflow runs from
 
 This repository extracts the provider boundary from Runalith. It contains the provider contracts, versioned provider-effect DTOs, GitHub Actions target validation, lookup/pagination, dispatch classification, bounded curl transport, and terminal-run evidence collection.
 
+## Terminology
+
+See [TERMINOLOGY.md](TERMINOLOGY.md) for shared identifier, lifecycle, evidence, time-unit, and compatibility conventions.
+
 ## Scope
 
 - Bind dispatch to an immutable provider intent and bounded JSON payload.
