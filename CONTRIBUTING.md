@@ -13,4 +13,4 @@ For dispatch changes, add deterministic tests that inject a mock `GitHubActionsT
 
 Run `cargo test --locked`, `cargo fmt -- --check`, `cargo clippy --all-targets --locked -- -D warnings`, and rustdoc with warnings denied.
 
-Dependencies on `workflow-domain` and `provider-intent-ledger` remain pinned to immutable Git revisions. Update a pin only after reviewing the dependency's API and compatibility changes.
+The package has no sibling-package dependencies. Keep provider intent DTOs and hashing logic local; do not add host-runtime or external repository dependencies.

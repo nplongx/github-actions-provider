@@ -6,12 +6,12 @@
 //! adapter authority to settle a Control task or release a lease.
 
 use crate::ProviderAdapterError;
-use provider_intent_ledger::{ProviderDispatchState, ProviderIntentRecord};
+use crate::digest::content_sha256;
+use crate::{ProviderDispatchState, ProviderIntentRecord};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use workflow_domain::content_hash;
 
 /// Current major provider-effect contract version.
 pub const PROVIDER_EFFECT_CONTRACT_V1: u16 = 1;
@@ -106,7 +106,7 @@ impl ProviderControlFenceV1 {
             idempotency_key: idempotency_key.into(),
             acl_sha256: acl_sha256.into(),
             state: ProviderControlFenceStateV1::Reserved,
-            receipt_sha256: content_hash(receipt)
+            receipt_sha256: content_sha256(receipt)
                 .map_err(|_| ProviderContractError::ControlFenceReceiptMismatch)?,
         };
         binding.validate()?;
@@ -153,7 +153,7 @@ impl ProviderControlFenceV1 {
         });
         let expected = format!(
             "worker-fence:{}",
-            content_hash(&identity).map_err(|_| ProviderContractError::InvalidControlFence)?
+            content_sha256(&identity).map_err(|_| ProviderContractError::InvalidControlFence)?
         );
         if self.idempotency_key != expected {
             return Err(ProviderContractError::InvalidControlFence);
@@ -192,7 +192,7 @@ impl ProviderControlFenceV1 {
             payload,
         };
         let expected_request_sha256 =
-            content_hash(&request).map_err(|_| ProviderContractError::InvalidPayload)?;
+            content_sha256(&request).map_err(|_| ProviderContractError::InvalidPayload)?;
         if self.request_sha256 != expected_request_sha256 {
             return Err(ProviderContractError::ControlFenceBindingMismatch);
         }
@@ -371,7 +371,7 @@ impl ProviderDispatchRequestV1 {
             return Err(ProviderContractError::InvalidSubject);
         }
         let payload = parse_canonical_json_object(&self.payload_bytes, MAX_PROVIDER_REQUEST_BYTES)?;
-        if content_hash(&payload).map_err(|_| ProviderContractError::InvalidPayload)?
+        if content_sha256(&payload).map_err(|_| ProviderContractError::InvalidPayload)?
             != self.subject.payload_sha256
         {
             return Err(ProviderContractError::PayloadDigestMismatch);
@@ -388,7 +388,7 @@ impl ProviderDispatchRequestV1 {
             request_sha256: self.subject.payload_sha256.clone(),
             payload,
         };
-        if content_hash(&legacy_request).map_err(|_| ProviderContractError::InvalidPayload)?
+        if content_sha256(&legacy_request).map_err(|_| ProviderContractError::InvalidPayload)?
             != self.subject.control_fence.request_sha256
             || self.subject.control_fence.side_effect_id != self.message_id
         {
@@ -719,7 +719,7 @@ impl ProviderTerminalProofV1 {
             "media_type": self.media_type,
             "response_sha256": self.response_sha256
         });
-        content_hash(&material).map_err(|_| ProviderContractError::InvalidPayload)
+        content_sha256(&material).map_err(|_| ProviderContractError::InvalidPayload)
     }
 }
 
@@ -989,7 +989,7 @@ fn sha256_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use provider_intent_ledger::ProviderIntentRequest;
+    use crate::ProviderIntentRequest;
 
     fn intent_for_contract() -> ProviderIntentRecord {
         let payload = serde_json::json!({"workflow":"release.yml","ref":"main"});
@@ -1004,7 +1004,7 @@ mod tests {
                 lease_id: "lease-2".into(),
                 worker_id: "worker-1".into(),
                 plan_sha256: "a".repeat(64),
-                request_sha256: content_hash(&payload).unwrap(),
+                request_sha256: content_sha256(&payload).unwrap(),
                 payload: Some(payload),
             },
             state: ProviderDispatchState::Reserved,
@@ -1048,10 +1048,10 @@ mod tests {
             owner_epoch,
             intent.request.plan_sha256.clone(),
             intent.intent_id.clone(),
-            content_hash(&dispatch).unwrap(),
+            content_sha256(&dispatch).unwrap(),
             format!(
                 "worker-fence:{}",
-                content_hash(&idempotency_identity).unwrap()
+                content_sha256(&idempotency_identity).unwrap()
             ),
             "c".repeat(64),
             &serde_json::json!({"reservation_id":intent.intent_id}),

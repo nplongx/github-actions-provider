@@ -1,15 +1,20 @@
 //! Provider adapter contracts and provider-specific dispatch/reconciliation logic.
-//! No network transport or production adapter is registered by the default host.
+//! No network transport or production registration is performed by this package.
 //!
 //! Adapters must receive a stable idempotency key and return an explicit
 //! accepted/rejected/unknown outcome. Transport errors are ambiguous unless an
 //! adapter can prove the request was never sent.
 
-use provider_intent_ledger::ProviderIntentRecord;
+mod digest;
+mod intent;
+
+use digest::content_sha256;
+pub use intent::{
+    ProviderDispatchState, ProviderIntentOutcome, ProviderIntentRecord, ProviderIntentRequest,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
-use workflow_domain::content_hash;
 
 /// Versioned W4 request, observation, run-reference and terminal-proof contracts.
 pub mod contract_v1;
@@ -100,8 +105,8 @@ pub fn validate_payload(
             "provider payload exceeds 1 MiB".into(),
         ));
     }
-    let actual =
-        content_hash(payload).map_err(|error| ProviderAdapterError::NotSent(error.to_string()))?;
+    let actual = content_sha256(payload)
+        .map_err(|error| ProviderAdapterError::NotSent(error.to_string()))?;
     if actual != expected_sha256.to_ascii_lowercase() {
         return Err(ProviderAdapterError::NotSent(
             "provider payload digest does not match immutable request_sha256".into(),
@@ -240,7 +245,6 @@ pub use github_actions::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use provider_intent_ledger::{ProviderDispatchState, ProviderIntentRequest};
 
     fn fixture() -> (ProviderIntentRecord, ProviderDispatchRequest) {
         let payload = serde_json::json!({
@@ -249,13 +253,13 @@ mod tests {
             "ref": "main",
             "required_evidence": ["report.json"]
         });
-        let request_sha256 = content_hash(&payload).unwrap();
+        let request_sha256 = content_sha256(&payload).unwrap();
         let intent_request = ProviderIntentRequest {
             workflow_id: "workflow-1".into(),
             task_id: "task-1".into(),
             attempt: 2,
             provider_id: "github-actions".into(),
-            idempotency_key: "runalith-test-key".into(),
+            idempotency_key: "provider-test-key".into(),
             lease_id: "lease-2".into(),
             worker_id: "worker-1".into(),
             plan_sha256: "a".repeat(64),
@@ -273,7 +277,7 @@ mod tests {
         };
         let request = ProviderDispatchRequest {
             provider_id: "github-actions".into(),
-            idempotency_key: "runalith-test-key".into(),
+            idempotency_key: "provider-test-key".into(),
             workflow_id: "workflow-1".into(),
             task_id: "task-1".into(),
             attempt: 2,

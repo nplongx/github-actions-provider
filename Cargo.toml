@@ -1,23 +1,21 @@
 [package]
-name = "runalith-github-actions-provider"
-version = "0.1.0"
+name = "github-actions-provider"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-description = "Fail-closed GitHub Actions workflow-dispatch adapter with durable intent contracts"
-repository = "https://github.com/nplongx/runalith-github-actions-provider"
+description = "Fail-closed GitHub Actions workflow-dispatch adapter with provider intent contracts"
+repository = "https://github.com/nplongx/github-actions-provider"
 readme = "README.md"
 keywords = ["github-actions", "workflow", "provider", "idempotency"]
 categories = ["development-tools"]
 
 [dependencies]
 hex = "=0.4.3"
-provider-intent-ledger = { version = "=0.1.0", git = "https://github.com/nplongx/provider-intent-ledger", rev = "b5a7f6ae83a7e69c9c7178e158fc66a800a37f1b" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "unbounded_depth"] }
 sha2 = "=0.10.9"
 thiserror = "=2.0.20"
-workflow-domain = { version = "=0.1.0", git = "https://github.com/nplongx/workflow-domain", rev = "c2460e8459b3a8db9def6d13320adc6f7cc4d2f9" }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

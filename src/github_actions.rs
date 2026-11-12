@@ -2,10 +2,9 @@
 //!
 //! The adapter contains provider-specific idempotency and lookup semantics.
 //! HTTP/authentication is injected through [`GitHubActionsTransport`], keeping
-//! credentials outside immutable provider payloads. The default MCP host does
-//! not register this adapter.
+//! credentials outside immutable provider payloads. Host registration and
+//! authorization remain caller responsibilities.
 
-use provider_intent_ledger::ProviderIntentRecord;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -23,10 +22,10 @@ use std::{
 use crate::{
     ProviderAdapter, ProviderAdapterError, ProviderAdapterV1, ProviderDispatchObservationV1,
     ProviderDispatchOutcomeV1, ProviderDispatchRequest, ProviderDispatchRequestV1,
-    ProviderDispatchResponse, ProviderEffectSubjectV1, ProviderLookupResponse,
-    ProviderNotSentEvidenceV1, ProviderRunRefV1, ProviderTerminalProofV1, validate_payload,
+    ProviderDispatchResponse, ProviderDispatchState, ProviderEffectSubjectV1, ProviderIntentRecord,
+    ProviderIntentRequest, ProviderLookupResponse, ProviderNotSentEvidenceV1, ProviderRunRefV1,
+    ProviderTerminalProofV1, validate_payload,
 };
-use provider_intent_ledger::{ProviderDispatchState, ProviderIntentRequest};
 
 /// Exact GitHub Actions target parsed from the immutable provider payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,7 +40,7 @@ pub struct GitHubActionsTarget {
     /// Git reference passed to `workflow_dispatch`.
     #[serde(rename = "ref")]
     pub git_ref: String,
-    /// Exact workflow inputs, including the stable Runalith intent ID.
+    /// Exact workflow inputs, including the stable provider intent ID.
     pub inputs: Value,
 }
 
@@ -97,11 +96,11 @@ pub trait GitHubActionsTransport: Send + Sync {
         None
     }
 
-    /// Search all or part of the exact target scope for `runalith_intent_id`.
+    /// Search all or part of the exact target scope for `provider_intent_id`.
     fn lookup_run(
         &self,
         target: &GitHubActionsTarget,
-        runalith_intent_id: &str,
+        provider_intent_id: &str,
     ) -> Result<GitHubActionsLookup, ProviderAdapterError>;
 
     /// Invoke one workflow-dispatch request. Never retry inside transport.
@@ -228,10 +227,7 @@ impl GitHubHttpExecutor for CurlGitHubHttpExecutor {
                 "header",
                 format!("X-GitHub-Api-Version: {GITHUB_API_VERSION}"),
             ),
-            (
-                "header",
-                "User-Agent: runalith-rust-github-actions".to_owned(),
-            ),
+            ("header", "User-Agent: github-actions-provider".to_owned()),
             ("write-out", "\\n%{http_code}".to_owned()),
         ] {
             config.push_str(key);
@@ -667,9 +663,9 @@ impl<E: GitHubHttpExecutor> GitHubActionsTransport for GitHubActionsHttpTranspor
     fn lookup_run(
         &self,
         target: &GitHubActionsTarget,
-        runalith_intent_id: &str,
+        provider_intent_id: &str,
     ) -> Result<GitHubActionsLookup, ProviderAdapterError> {
-        self.lookup_scope(target, runalith_intent_id)
+        self.lookup_scope(target, provider_intent_id)
     }
 
     fn dispatch_workflow(
@@ -1466,7 +1462,7 @@ fn parse_target(
         || !target.inputs.is_object()
         || target
             .inputs
-            .get("runalith_intent_id")
+            .get("provider_intent_id")
             .and_then(Value::as_str)
             != Some(idempotency_key)
         || target
@@ -1478,7 +1474,7 @@ fn parse_target(
             })
     {
         return Err(ProviderAdapterError::NotSent(
-            "GitHub payload must bind owner/repo/workflow/ref and inputs.runalith_intent_id to the exact intent".into(),
+            "GitHub payload must bind owner/repo/workflow/ref and inputs.provider_intent_id to the exact intent".into(),
         ));
     }
     Ok(target)
@@ -1575,11 +1571,9 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
 
-    use provider_intent_ledger::{
-        ProviderDispatchState, ProviderIntentOutcome, ProviderIntentRequest,
-    };
+    use crate::ProviderIntentOutcome;
+    use crate::digest::content_sha256;
     use serde_json::json;
-    use workflow_domain::content_hash;
 
     use super::*;
 
@@ -1653,7 +1647,7 @@ mod tests {
         fn lookup_run(
             &self,
             _target: &GitHubActionsTarget,
-            _runalith_intent_id: &str,
+            _provider_intent_id: &str,
         ) -> Result<GitHubActionsLookup, ProviderAdapterError> {
             Ok(self.lookups.lock().unwrap().pop_front().unwrap_or_else(|| {
                 GitHubActionsLookup::Unknown {
@@ -1680,13 +1674,13 @@ mod tests {
     }
 
     fn request() -> ProviderDispatchRequest {
-        let idempotency_key = "runalith-intent-1".to_owned();
+        let idempotency_key = "provider-intent-1".to_owned();
         let payload = json!({
             "owner":"openai",
-            "repo":"runalith-worker",
+            "repo":"example-worker",
             "workflow":".github/workflows/worker.yml",
             "ref":"main",
-            "inputs":{"runalith_intent_id":idempotency_key,"task_id":"task-1","input_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+            "inputs":{"provider_intent_id":idempotency_key,"task_id":"task-1","input_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
         });
         ProviderDispatchRequest {
             provider_id: "github-actions".into(),
@@ -1697,7 +1691,7 @@ mod tests {
             lease_id: "lease-1".into(),
             worker_id: "worker-1".into(),
             plan_sha256: "a".repeat(64),
-            request_sha256: content_hash(&payload).unwrap(),
+            request_sha256: content_sha256(&payload).unwrap(),
             payload,
         }
     }
@@ -1721,8 +1715,11 @@ mod tests {
             3,
             legacy.plan_sha256.clone(),
             side_effect_id,
-            content_hash(&legacy).unwrap(),
-            format!("worker-fence:{}", content_hash(&control_identity).unwrap()),
+            content_sha256(&legacy).unwrap(),
+            format!(
+                "worker-fence:{}",
+                content_sha256(&control_identity).unwrap()
+            ),
             "b".repeat(64),
             &json!({"reservation_id":"provider-fence-1"}),
         )
@@ -1783,7 +1780,7 @@ mod tests {
             run_id: "123456".into(),
             status: "queued".into(),
             conclusion: None,
-            run_url: Some("https://github.com/openai/runalith-worker/actions/runs/123456".into()),
+            run_url: Some("https://github.com/openai/example-worker/actions/runs/123456".into()),
         }
     }
 
@@ -1947,7 +1944,7 @@ mod tests {
             provider_account_id: "gha-installation:test".into(),
             provider_run_id: "123456".into(),
             provider_run_url: Some(
-                "https://github.com/openai/runalith-worker/actions/runs/123456".into(),
+                "https://github.com/openai/example-worker/actions/runs/123456".into(),
             ),
         };
         let proof = adapter
@@ -1965,9 +1962,9 @@ mod tests {
     fn exact_http_run() -> Value {
         json!({
             "id":123456,"status":"queued","conclusion":null,
-            "html_url":"https://github.com/openai/runalith-worker/actions/runs/123456",
-            "display_title":"P3 worker runalith-intent-1",
-            "repository":{"full_name":"openai/runalith-worker"},
+            "html_url":"https://github.com/openai/example-worker/actions/runs/123456",
+            "display_title":"P3 worker provider-intent-1",
+            "repository":{"full_name":"openai/example-worker"},
             "path":".github/workflows/worker.yml@refs/heads/main",
             "event":"workflow_dispatch","head_branch":"main","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","run_attempt":1
         })
@@ -1991,7 +1988,7 @@ mod tests {
         let result = transport
             .lookup_run(
                 &parse_target(&request().payload, &request().idempotency_key).unwrap(),
-                "runalith-intent-1",
+                "provider-intent-1",
             )
             .unwrap();
         assert_eq!(
@@ -2001,7 +1998,7 @@ mod tests {
                 status: "queued".into(),
                 conclusion: None,
                 run_url: Some(
-                    "https://github.com/openai/runalith-worker/actions/runs/123456".into()
+                    "https://github.com/openai/example-worker/actions/runs/123456".into()
                 )
             }
         );
@@ -2042,7 +2039,7 @@ mod tests {
         );
         let body: Value = serde_json::from_slice(requests[1].2.as_deref().unwrap()).unwrap();
         assert_eq!(body["ref"], "main");
-        assert_eq!(body["inputs"]["runalith_intent_id"], "runalith-intent-1");
+        assert_eq!(body["inputs"]["provider_intent_id"], "provider-intent-1");
     }
 
     #[test]
@@ -2269,7 +2266,7 @@ mod tests {
             ProviderLookupResponse::NotFound {
                 authoritative: true,
                 pages_scanned: 5,
-                query_scope: "openai/runalith-worker/.github/workflows/worker.yml@main".into()
+                query_scope: "openai/example-worker/.github/workflows/worker.yml@main".into()
             }
         );
 
@@ -2302,8 +2299,8 @@ mod tests {
     #[test]
     fn rejects_wrong_intent_marker_and_embedded_secret_before_transport() {
         let mut invalid = request();
-        invalid.payload["inputs"]["runalith_intent_id"] = json!("another-intent");
-        invalid.request_sha256 = content_hash(&invalid.payload).unwrap();
+        invalid.payload["inputs"]["provider_intent_id"] = json!("another-intent");
+        invalid.request_sha256 = content_sha256(&invalid.payload).unwrap();
         let transport = MockTransport::new([], Ok(GitHubActionsDispatch::Accepted));
         let adapter = GitHubActionsAdapter::new(transport);
         assert!(matches!(
@@ -2313,7 +2310,7 @@ mod tests {
 
         let mut secret = request();
         secret.payload["inputs"]["access_token"] = json!("not-allowed");
-        secret.request_sha256 = content_hash(&secret.payload).unwrap();
+        secret.request_sha256 = content_sha256(&secret.payload).unwrap();
         assert!(matches!(
             adapter.dispatch(&secret).unwrap_err(),
             ProviderAdapterError::NotSent(_)
